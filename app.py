@@ -18,7 +18,6 @@ DATABASE_URL = os.environ.get(
 # ბაზასთან კავშირის დამხმარე ფუნქცია
 def get_db_connection():
     conn = psycopg2.connect(DATABASE_URL, sslmode="require")
-    conn.row_factory = psycopg2.extras.DictCursor
     return conn
 
 
@@ -58,7 +57,7 @@ def init_db():
         FROM information_schema.columns 
         WHERE table_name = 'trades'
     """)
-    columns = [row["column_name"] for row in cursor.fetchall()]
+    columns = [row[0] for row in cursor.fetchall()]
 
     if "emotion" not in columns:
         cursor.execute("ALTER TABLE trades ADD COLUMN emotion TEXT")
@@ -85,7 +84,7 @@ def paid_required(f):
             return f(*args, **kwargs)
 
         conn = get_db_connection()
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
         cursor.execute(
             "SELECT is_paid FROM users WHERE id = %s", (session["user_id"],)
         )
@@ -121,7 +120,7 @@ def login():
         password = request.form.get("password")
 
         conn = get_db_connection()
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
         cursor.execute(
             "SELECT * FROM users WHERE username = %s", (username,)
         )
@@ -176,7 +175,7 @@ def pending_approval():
         return redirect(url_for("login"))
 
     conn = get_db_connection()
-    cursor = conn.cursor()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
     cursor.execute(
         "SELECT is_paid FROM users WHERE id = %s", (session["user_id"],)
     )
@@ -200,7 +199,7 @@ def logout():
 @paid_required
 def index():
     conn = get_db_connection()
-    cursor = conn.cursor()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
     cursor.execute(
         "SELECT * FROM trades WHERE user_id = %s ORDER BY id DESC",
         (session["user_id"],),
@@ -299,7 +298,7 @@ def index():
 @paid_required
 def trades_list():
     conn = get_db_connection()
-    cursor = conn.cursor()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
     cursor.execute(
         "SELECT * FROM trades WHERE user_id = %s ORDER BY id DESC",
         (session["user_id"],),
@@ -314,7 +313,7 @@ def trades_list():
 @paid_required
 def trade_detail(id):
     conn = get_db_connection()
-    cursor = conn.cursor()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
     cursor.execute(
         "SELECT * FROM trades WHERE id = %s AND user_id = %s",
         (id, session["user_id"]),
@@ -382,7 +381,7 @@ def add_trade():
 @paid_required
 def delete_trade(id):
     conn = get_db_connection()
-    cursor = conn.cursor()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
     cursor.execute(
         "SELECT * FROM trades WHERE id = %s AND user_id = %s",
         (id, session["user_id"]),
@@ -401,7 +400,7 @@ def delete_trade(id):
 @paid_required
 def analytics():
     conn = get_db_connection()
-    cursor = conn.cursor()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
     cursor.execute(
         "SELECT * FROM trades WHERE user_id = %s ORDER BY id DESC",
         (session["user_id"],),
@@ -488,7 +487,7 @@ def update_settings():
 @admin_required
 def admin_users():
     conn = get_db_connection()
-    cursor = conn.cursor()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
     cursor.execute(
         "SELECT id, username, is_paid FROM users WHERE username != 'sandrika'"
     )
@@ -502,7 +501,7 @@ def admin_users():
 @admin_required
 def toggle_user(user_id):
     conn = get_db_connection()
-    cursor = conn.cursor()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
     cursor.execute(
         "SELECT is_paid FROM users WHERE id = %s", (user_id,)
     )
