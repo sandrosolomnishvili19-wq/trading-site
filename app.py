@@ -18,7 +18,7 @@ DATABASE_URL = os.environ.get(
 
 # ბაზასთან კავშირის დამხმარე ფუნქცია
 def get_db_connection():
-    conn = psycopg2.connect(postgresql://postgres:Sandrika789@db.rnktcgfknokfdktfxjkb.supabase.co:5432/postgres, sslmode="require")
+    conn = psycopg2.connect("postgresql://postgres:Sandrika789@db.rnktcgfknokfdktfxjkb.supabase.co:5432/postgres", sslmode="require")
     conn.row_factory = psycopg2.extras.DictCursor
     return conn
 
