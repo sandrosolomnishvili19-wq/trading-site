@@ -31,7 +31,10 @@ def init_db():
             id SERIAL PRIMARY KEY,
             username TEXT UNIQUE NOT NULL,
             password TEXT NOT NULL,
-            is_paid INTEGER DEFAULT 0
+            is_paid INTEGER DEFAULT 0,
+            initial_balance REAL DEFAULT 50000.0,
+            max_loss_limit REAL DEFAULT 1000.0,
+            target_balance REAL DEFAULT 53000.0
         )
     """)
 
@@ -51,7 +54,22 @@ def init_db():
         )
     """)
 
-    # ვამოწმებთ სვეტებს trades ცხრილში (თუ ძველი სტრუქტურაა)
+    # ვამოწმებთ სვეტებს users ცხრილში (თუ ძველი სტრუქტურაა)
+    cursor.execute("""
+        SELECT column_name 
+        FROM information_schema.columns 
+        WHERE table_name = 'users'
+    """)
+    user_columns = [row[0] for row in cursor.fetchall()]
+
+    if "initial_balance" not in user_columns:
+        cursor.execute("ALTER TABLE users ADD COLUMN initial_balance REAL DEFAULT 50000.0")
+    if "max_loss_limit" not in user_columns:
+        cursor.execute("ALTER TABLE users ADD COLUMN max_loss_limit REAL DEFAULT 1000.0")
+    if "target_balance" not in user_columns:
+        cursor.execute("ALTER TABLE users ADD COLUMN target_balance REAL DEFAULT 53000.0")
+
+    # ვამოწმებთ სვეტებს trades ცხრილში
     cursor.execute("""
         SELECT column_name 
         FROM information_schema.columns 
@@ -200,6 +218,18 @@ def logout():
 def index():
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+    
+    # ვკითხულობთ მომხმარებლის პარამეტრებს
+    cursor.execute(
+        "SELECT initial_balance, max_loss_limit, target_balance FROM users WHERE id = %s",
+        (session["user_id"],),
+    )
+    db_user = cursor.fetchone()
+
+    initial_balance = float(db_user["initial_balance"]) if db_user and db_user["initial_balance"] is not None else 50000.0
+    max_loss_limit = float(db_user["max_loss_limit"]) if db_user and db_user["max_loss_limit"] is not None else 1000.0
+    target_balance = float(db_user["target_balance"]) if db_user and db_user["target_balance"] is not None else 53000.0
+
     cursor.execute(
         "SELECT * FROM trades WHERE user_id = %s ORDER BY id DESC",
         (session["user_id"],),
@@ -208,7 +238,6 @@ def index():
     cursor.close()
     conn.close()
 
-    initial_balance = 50000.0
     current_balance = initial_balance
     total_pnl = 0.0
     wins = 0
@@ -218,7 +247,6 @@ def index():
     gross_profit = 0.0
     gross_loss = 0.0
 
-    max_loss_limit = 1000.0
     current_max_loss = max_loss_limit
 
     chart_data = []
@@ -259,7 +287,6 @@ def index():
     else:
         profit_factor = 0.0
 
-    target_balance = 53000.0
     progress_pct = (
         round(
             (
@@ -479,7 +506,25 @@ def analytics():
 @app.route("/update_settings", methods=["POST"])
 @paid_required
 def update_settings():
-    flash("პარამეტრები განახლდა!", "success")
+    initial_balance = float(request.form.get("initial_balance", 50000.0) or 50000.0)
+    max_loss_limit = float(request.form.get("max_loss_limit", 1000.0) or 1000.0)
+    target_balance = float(request.form.get("target_balance", 53000.0) or 53000.0)
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+            UPDATE users 
+            SET initial_balance = %s, max_loss_limit = %s, target_balance = %s 
+            WHERE id = %s
+        """,
+        (initial_balance, max_loss_limit, target_balance, session["user_id"]),
+    )
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    flash("პარამეტრები წარმატებით განახლდა!", "success")
     return redirect(url_for("index"))
 
 
