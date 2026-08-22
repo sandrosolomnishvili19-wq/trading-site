@@ -12,7 +12,7 @@ app.secret_key = "your_secret_key_here"
 # როდესაც Render-ზე ატვირთავ, შეგიძლია Environment Variables-ში ჩაწერო DATABASE_URL
 DATABASE_URL = os.environ.get(
     "DATABASE_URL", 
-    "postgresql://postgres:Sandrika789@db.rnktcgfknokfdktfxjkb.supabase.co:5432/postgres"
+    "postgresql://postgres.rnktcgfknokfdktfxjkb:Sandrika789$@aws-0-ap-northeast-2.pooler.supabase.com:6543/postgres"
 )
 
 
