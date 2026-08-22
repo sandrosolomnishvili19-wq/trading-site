@@ -9,7 +9,6 @@ app = Flask(__name__)
 app.secret_key = "your_secret_key_here"
 
 # Supabase PostgreSQL ბაზის მისამართი
-# როდესაც Render-ზე ატვირთავ, შეგიძლია Environment Variables-ში ჩაწერო DATABASE_URL
 DATABASE_URL = os.environ.get(
     "DATABASE_URL", 
     "postgresql://postgres.rnktcgfknokfdktfxjkb:Sandrika789%24@aws-0-ap-northeast-2.pooler.supabase.com:6543/postgres"
@@ -18,7 +17,7 @@ DATABASE_URL = os.environ.get(
 
 # ბაზასთან კავშირის დამხმარე ფუნქცია
 def get_db_connection():
-    conn = psycopg2.connect("aws-0-ap-northeast-2.pooler.supabase.com", sslmode="require")
+    conn = psycopg2.connect(DATABASE_URL, sslmode="require")
     conn.row_factory = psycopg2.extras.DictCursor
     return conn
 
