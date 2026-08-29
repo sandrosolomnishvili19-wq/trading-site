@@ -45,7 +45,7 @@
             {% with messages = get_flashed_messages(with_categories=true) %}
                 {% if messages %}
                     {% for category, message in messages %}
-                        <div class="mb-5 p-3.5 rounded-xl text-xs font-medium border {% if category == 'error' %} bg-danger/10 border-danger/20 text-red-400 {% else %} bg-emerald-500/10 border-emerald-500/20 text-emerald-400 {% endif %} flex items-center gap-2">
+                        <div class="mb-5 p-3.5 rounded-xl text-xs font-medium border {% if category == 'error' %} bg-red-500/10 border-red-500/20 text-red-400 {% else %} bg-emerald-500/10 border-emerald-500/20 text-emerald-400 {% endif %} flex items-center gap-2">
                             <span>{{ message }}</span>
                         </div>
                     {% endfor %}
@@ -56,6 +56,10 @@
                 <div>
                     <label class="block text-xs font-medium text-gray-400 mb-1.5">მომხმარებლის სახელი</label>
                     <input type="text" name="username" required class="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:border-indigo-500 transition">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-gray-400 mb-1.5">ელ-ფოსტა (Email)</label>
+                    <input type="email" name="email" required class="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:border-indigo-500 transition">
                 </div>
                 <div>
                     <label class="block text-xs font-medium text-gray-400 mb-1.5">პაროლი</label>
