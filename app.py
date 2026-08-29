@@ -1,12 +1,25 @@
 from functools import wraps
 import os
+import datetime
+import secrets
 import psycopg2
 import psycopg2.extras
 from flask import Flask, flash, redirect, render_template, request, session, url_for
+from flask_mail import Mail, Message
 from werkzeug.security import check_password_hash, generate_password_hash
 
 app = Flask(__name__)
 app.secret_key = "your_secret_key_here"
+
+# Flask-Mail კონფიგურაცია (ჩაანაცვლე შენი მონაცემებით)
+app.config["MAIL_SERVER"] = "smtp.gmail.com"
+app.config["MAIL_PORT"] = 587
+app.config["MAIL_USE_TLS"] = True
+app.config["MAIL_USERNAME"] = "your_email@gmail.com"  # შენი მეილი
+app.config["MAIL_PASSWORD"] = "your_app_password"     # აპლიკაციის პაროლი
+app.config["MAIL_DEFAULT_SENDER"] = "your_email@gmail.com"
+
+mail = Mail(app)
 
 # Supabase PostgreSQL ბაზის მისამართი
 DATABASE_URL = os.environ.get(
@@ -30,11 +43,14 @@ def init_db():
         CREATE TABLE IF NOT EXISTS users (
             id SERIAL PRIMARY KEY,
             username TEXT UNIQUE NOT NULL,
+            email TEXT,
             password TEXT NOT NULL,
             is_paid INTEGER DEFAULT 0,
             initial_balance REAL DEFAULT 50000.0,
             max_loss_limit REAL DEFAULT 1000.0,
-            target_balance REAL DEFAULT 53000.0
+            target_balance REAL DEFAULT 53000.0,
+            reset_token TEXT,
+            reset_token_expiration TIMESTAMP
         )
     """)
 
@@ -54,7 +70,7 @@ def init_db():
         )
     """)
 
-    # ვამოწმებთ სვეტებს users ცხრილში (თუ ძველი სტრუქტურაა)
+    # ვამოწმებთ სვეტებს users ცხრილში
     cursor.execute("""
         SELECT column_name 
         FROM information_schema.columns 
@@ -62,12 +78,18 @@ def init_db():
     """)
     user_columns = [row[0] for row in cursor.fetchall()]
 
+    if "email" not in user_columns:
+        cursor.execute("ALTER TABLE users ADD COLUMN email TEXT")
     if "initial_balance" not in user_columns:
         cursor.execute("ALTER TABLE users ADD COLUMN initial_balance REAL DEFAULT 50000.0")
     if "max_loss_limit" not in user_columns:
         cursor.execute("ALTER TABLE users ADD COLUMN max_loss_limit REAL DEFAULT 1000.0")
     if "target_balance" not in user_columns:
         cursor.execute("ALTER TABLE users ADD COLUMN target_balance REAL DEFAULT 53000.0")
+    if "reset_token" not in user_columns:
+        cursor.execute("ALTER TABLE users ADD COLUMN reset_token TEXT")
+    if "reset_token_expiration" not in user_columns:
+        cursor.execute("ALTER TABLE users ADD COLUMN reset_token_expiration TIMESTAMP")
 
     # ვამოწმებთ სვეტებს trades ცხრილში
     cursor.execute("""
@@ -79,7 +101,6 @@ def init_db():
 
     if "emotion" not in columns:
         cursor.execute("ALTER TABLE trades ADD COLUMN emotion TEXT")
-    
     if "screenshot" not in columns:
         cursor.execute("ALTER TABLE trades ADD COLUMN screenshot TEXT")
 
@@ -165,6 +186,7 @@ def login():
 def register():
     if request.method == "POST":
         username = request.form.get("username")
+        email = request.form.get("email")
         password = request.form.get("password")
 
         hashed_password = generate_password_hash(password)
@@ -173,8 +195,8 @@ def register():
             conn = get_db_connection()
             cursor = conn.cursor()
             cursor.execute(
-                "INSERT INTO users (username, password, is_paid) VALUES (%s, %s, 0)",
-                (username, hashed_password),
+                "INSERT INTO users (username, email, password, is_paid) VALUES (%s, %s, %s, 0)",
+                (username, email, hashed_password),
             )
             conn.commit()
             cursor.close()
@@ -182,387 +204,56 @@ def register():
             flash("რეგისტრაცია წარმატებულია!", "success")
             return redirect(url_for("login"))
         except Exception:
-            flash("ეს იუზერნეიმი დაკავებულია.", "error")
+            flash("ეს იუზერნეიმი ან მეილი დაკავებულია.", "error")
 
     return render_template("register.html")
 
 
-@app.route("/pending")
-def pending_approval():
-    if "user_id" not in session:
-        return redirect(url_for("login"))
-
-    conn = get_db_connection()
-    cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-    cursor.execute(
-        "SELECT is_paid FROM users WHERE id = %s", (session["user_id"],)
-    )
-    user = cursor.fetchone()
-    cursor.close()
-    conn.close()
-
-    if session.get("username") == "sandrika" or (user and user["is_paid"] == 1):
-        return redirect(url_for("index"))
-
-    return render_template("pending.html", discord_tag="cs2sacc")
-
-
-@app.route("/logout")
-def logout():
+@app.route("/forgot-password", methods=["GET", "POST"])
+def forgot_password():
     session.clear()
-    return redirect(url_for("login"))
-
-
-@app.route("/")
-@paid_required
-def index():
-    conn = get_db_connection()
-    cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-    
-    # ვკითხულობთ მომხმარებლის პარამეტრებს
-    cursor.execute(
-        "SELECT initial_balance, max_loss_limit, target_balance FROM users WHERE id = %s",
-        (session["user_id"],),
-    )
-    db_user = cursor.fetchone()
-
-    initial_balance = float(db_user["initial_balance"]) if db_user and db_user["initial_balance"] is not None else 50000.0
-    max_loss_limit = float(db_user["max_loss_limit"]) if db_user and db_user["max_loss_limit"] is not None else 1000.0
-    target_balance = float(db_user["target_balance"]) if db_user and db_user["target_balance"] is not None else 53000.0
-
-    cursor.execute(
-        "SELECT * FROM trades WHERE user_id = %s ORDER BY id DESC",
-        (session["user_id"],),
-    )
-    trades = cursor.fetchall()
-    cursor.close()
-    conn.close()
-
-    current_balance = initial_balance
-    total_pnl = 0.0
-    wins = 0
-    dataSource_trades = list(trades)
-    total_trades = len(dataSource_trades)
-
-    gross_profit = 0.0
-    gross_loss = 0.0
-
-    current_max_loss = max_loss_limit
-
-    chart_data = []
-    calendar_data = {}  
-
-    for t in reversed(dataSource_trades):
-        pnl = t["pnl"]
-        total_pnl += pnl
-        current_balance += pnl
-
-        if pnl > 0:
-            wins += 1
-            gross_profit += pnl
-        elif pnl < 0:
-            gross_loss += abs(pnl)
-            current_max_loss -= abs(pnl)
-
-        chart_data.append({"time": t["date"], "value": current_balance})
-
-    for t in dataSource_trades:
-        trade_date = str(t["date"])  
-        pnl = t["pnl"]
-        if trade_date not in calendar_data:
-            calendar_data[trade_date] = 0.0
-        calendar_data[trade_date] += pnl
-
-    if current_max_loss < 0:
-        current_max_loss = 0.0
-
-    win_rate = (
-        round((wins / total_trades * 100), 1) if total_trades > 0 else 0
-    )
-
-    if gross_loss > 0:
-        profit_factor = round(gross_profit / gross_loss, 2)
-    elif gross_profit > 0:
-        profit_factor = round(gross_profit, 2)
-    else:
-        profit_factor = 0.0
-
-    progress_pct = (
-        round(
-            (
-                (current_balance - initial_balance)
-                / (target_balance - initial_balance)
-            )
-            * 100,
-            1,
-        )
-        if target_balance > initial_balance
-        else 0
-    )
-    if progress_pct < 0:
-        progress_pct = 0
-    if progress_pct > 100:
-        progress_pct = 100
-
-    return render_template(
-        "index.html",
-        initial_balance=initial_balance,
-        current_balance=current_balance,
-        total_pnl=total_pnl,
-        win_rate=win_rate,
-        profit_factor=profit_factor,
-        max_loss_limit=current_max_loss,
-        target_balance=target_balance,
-        progress_pct=progress_pct,
-        chart_data=chart_data,
-        calendar_data=calendar_data,  
-        daily_pnl=calendar_data,  
-        trades=trades,
-    )
-
-
-@app.route("/trades")
-@paid_required
-def trades_list():
-    conn = get_db_connection()
-    cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-    cursor.execute(
-        "SELECT * FROM trades WHERE user_id = %s ORDER BY id DESC",
-        (session["user_id"],),
-    )
-    trades = cursor.fetchall()
-    cursor.close()
-    conn.close()
-    return render_template("trades.html", trades=trades)
-
-
-@app.route("/trade/<int:id>")
-@paid_required
-def trade_detail(id):
-    conn = get_db_connection()
-    cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-    cursor.execute(
-        "SELECT * FROM trades WHERE id = %s AND user_id = %s",
-        (id, session["user_id"]),
-    )
-    trade = cursor.fetchone()
-    cursor.close()
-    conn.close()
-
-    if not trade:
-        flash("ტრეიდი ვერ მოიძებნა.", "error")
-        return redirect(url_for("trades_list"))
-
-    return render_template("trade_detail.html", trade=trade)
-
-
-@app.route("/add_trade", methods=["GET", "POST"])
-@paid_required
-def add_trade():
     if request.method == "POST":
-        date = request.form.get("date")
-        pair = request.form.get("pair")
-
-        raw_direction = str(request.form.get("direction", "")).strip().lower()
-        if "short" in raw_direction or "შორთ" in raw_direction or raw_direction == "s":
-            direction = "SHORT"
-        else:
-            direction = "LONG"
-
-        entry_price = float(request.form.get("entry_price", 0) or 0)
-        exit_price = float(request.form.get("exit_price", 0) or 0)
-        pnl = float(request.form.get("pnl", 0) or 0)
-        emotion = request.form.get("emotion", "ნეიტრალური")
-        screenshot_base64 = request.form.get("screenshot")
-
+        email = request.form.get("email")
+        
         conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-                INSERT INTO trades (user_id, date, pair, direction, entry_price, exit_price, pnl, emotion, screenshot)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """,
-            (
-                session["user_id"],
-                date,
-                pair,
-                direction,
-                entry_price,
-                exit_price,
-                pnl,
-                emotion,
-                screenshot_base64,
-            ),
-        )
-        conn.commit()
-        cursor.close()
-        conn.close()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        cursor.execute("SELECT id, email FROM users WHERE email = %s", (email,))
+        user = cursor.fetchone()
+        
+        if user:
+            token = secrets.token_urlsafe(32)
+            expiration = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)
+            
+            cursor.execute(
+                "UPDATE users SET reset_token = %s, reset_token_expiration = %s WHERE id = %s",
+                (token, expiration, user["id"])
+            )
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            reset_url = url_for("reset_password", token=token, _external=True)
+            msg = Message("პაროლის აღდგენა - YourStats", recipients=[email])
+            msg.body = f"""პაროლის აღსადგენად მიჰყევით ამ ბმულს:
+{reset_url}
 
-        flash("ტრეიდი და სურათი წარმატებით დაემატა!", "success")
-        return redirect(url_for("index"))
-
-    return render_template("add_trade.html")
-
-
-@app.route("/delete_trade/<int:id>", methods=["GET", "POST"])
-@paid_required
-def delete_trade(id):
-    conn = get_db_connection()
-    cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-    cursor.execute(
-        "SELECT * FROM trades WHERE id = %s AND user_id = %s",
-        (id, session["user_id"]),
-    )
-    trade = cursor.fetchone()
-    if trade:
-        cursor.execute("DELETE FROM trades WHERE id = %s", (id,))
-        conn.commit()
-        flash("ტრეიდი წაიშალა!", "success")
-    cursor.close()
-    conn.close()
-    return redirect(url_for("trades_list"))
+თუ ეს მოთხოვნა თქვენ არ გეკუთვნით, უბრალოდ უგულებელყავით ეს წერილი. ბმული ძალაშია 1 საათის განმავლობაში."""
+            
+            try:
+                mail.send(msg)
+                flash("პაროლის აღდგენის ინსტრუქცია გამოგზავნილია თქვენს მეილზე.", "success")
+            except Exception as e:
+                print(e)
+                flash("მეილის გაგზავნა ვერ მოხერხდა. სცადეთ მოგვიანებით.", "error")
+        else:
+            cursor.close()
+            conn.close()
+            flash("მომხმარებელი ამ მეილით ვერ მოიძებნა.", "error")
+            
+        return redirect(url_for("forgot_password"))
+        
+    return render_template("forgot_password.html")
 
 
-@app.route("/analytics")
-@paid_required
-def analytics():
-    conn = get_db_connection()
-    cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-    cursor.execute(
-        "SELECT * FROM trades WHERE user_id = %s ORDER BY id DESC",
-        (session["user_id"],),
-    )
-    trades = cursor.fetchall()
-    cursor.close()
-    conn.close()
-
-    long_wins = 0
-    long_losses = 0
-    long_pnl = 0.0
-
-    short_wins = 0
-    short_losses = 0
-    short_pnl = 0.0
-
-    emotion_stats = {}
-
-    for t in trades:
-        pnl = t["pnl"]
-        raw_dir = str(t["direction"]).strip().lower() if t["direction"] else ""
-        emotion = (
-            t["emotion"] if "emotion" in t.keys() and t["emotion"] else "ზოგადი"
-        )
-
-        if emotion not in emotion_stats:
-            emotion_stats[emotion] = {"count": 0, "pnl": 0.0}
-        emotion_stats[emotion]["count"] += 1
-        emotion_stats[emotion]["pnl"] += pnl
-
-        is_short = (
-            "short" in raw_dir or "შორთ" in raw_dir or raw_dir.startswith("s")
-        )
-        is_long = "long" in raw_dir or "ლონგ" in raw_dir or raw_dir.startswith("l")
-
-        if is_short:
-            if pnl >= 0:
-                short_wins += 1
-            else:
-                short_losses += 1
-            short_pnl += pnl
-        elif is_long or not raw_dir:
-            if pnl >= 0:
-                long_wins += 1
-            else:
-                long_losses += 1
-            long_pnl += pnl
-
-    long_count = long_wins + long_losses
-    short_count = short_wins + short_losses
-
-    long_stats = {
-        "count": long_count,
-        "pnl": long_pnl,
-        "win_rate": (
-            round((long_wins / long_count * 100), 1) if long_count > 0 else 0
-        ),
-    }
-
-    short_stats = {
-        "count": short_count,
-        "pnl": short_pnl,
-        "win_rate": (
-            round((short_wins / short_count * 100), 1) if short_count > 0 else 0
-        ),
-    }
-
-    return render_template(
-        "analytics.html",
-        long_stats=long_stats,
-        short_stats=short_stats,
-        emotion_stats=emotion_stats,
-    )
-
-
-@app.route("/update_settings", methods=["POST"])
-@paid_required
-def update_settings():
-    initial_balance = float(request.form.get("initial_balance", 50000.0) or 50000.0)
-    max_loss_limit = float(request.form.get("max_loss_limit", 1000.0) or 1000.0)
-    target_balance = float(request.form.get("target_balance", 53000.0) or 53000.0)
-
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-            UPDATE users 
-            SET initial_balance = %s, max_loss_limit = %s, target_balance = %s 
-            WHERE id = %s
-        """,
-        (initial_balance, max_loss_limit, target_balance, session["user_id"]),
-    )
-    conn.commit()
-    cursor.close()
-    conn.close()
-
-    flash("პარამეტრები წარმატებით განახლდა!", "success")
-    return redirect(url_for("index"))
-
-
-@app.route("/admin/users")
-@admin_required
-def admin_users():
-    conn = get_db_connection()
-    cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-    cursor.execute(
-        "SELECT id, username, is_paid FROM users WHERE username != 'sandrika'"
-    )
-    all_users = cursor.fetchall()
-    cursor.close()
-    conn.close()
-    return render_template("admin_users.html", users=all_users)
-
-
-@app.route("/admin/toggle/<int:user_id>", methods=["POST"])
-@admin_required
-def toggle_user(user_id):
-    conn = get_db_connection()
-    cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-    cursor.execute(
-        "SELECT is_paid FROM users WHERE id = %s", (user_id,)
-    )
-    current = cursor.fetchone()
-    if current:
-        new_status = 0 if current["is_paid"] == 1 else 1
-        cursor.execute(
-            "UPDATE users SET is_paid = %s WHERE id = %s", (new_status, user_id)
-        )
-        conn.commit()
-    cursor.close()
-    conn.close()
-    flash("სტატუსი განახლდა!", "success")
-    return redirect(url_for("admin_users"))
-
-
-if __name__ == "__main__":
-    init_db()
-    app.run(debug=True)
+@app.route("/reset-password/<token>", methods=["GET", "POST"])
+def reset_
